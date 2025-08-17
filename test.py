@@ -1,6 +1,8 @@
 import os
 import json
 import subprocess
+import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -10,8 +12,10 @@ OUTPUT_JSON = "hdl_coder_100_desc.json"  # output JSON with descriptions
 MODEL = "llama3.2:3b"
 NUM_GPUS = 2
 CONCURRENCY_PER_GPU = 2   # tune based on benchmark
+GPU_MONITOR_INTERVAL = 5   # seconds between GPU usage checks
 
-def run_inference(gpu_id: int, snippet: str):
+def run_inference(gpu_id: int, snippet: str, file_name: str):
+    start_time = time.time()
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
@@ -21,7 +25,36 @@ def run_inference(gpu_id: int, snippet: str):
         capture_output=True,
         env=env
     )
-    return proc.stdout.decode("utf-8").strip()
+
+    elapsed = time.time() - start_time
+    output_text = proc.stdout.decode("utf-8").strip()
+
+    return {
+        "file_name": file_name,
+        "description": output_text,
+        "gpu": gpu_id,
+        "time_sec": elapsed,
+    }
+
+
+def monitor_gpus(stop_event):
+    """Periodically print GPU utilization using nvidia-smi."""
+    while not stop_event.is_set():
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+            )
+            lines = result.stdout.strip().split("\n")
+            print("[GPU Monitor]")
+            for line in lines:
+                idx, util, mem_used, mem_total = line.split(", ")
+                print(f" GPU {idx}: {util}% | {mem_used}/{mem_total} MB")
+        except Exception as e:
+            print(f"[GPU Monitor Error] {e}")
+        time.sleep(GPU_MONITOR_INTERVAL)
+
 
 def main():
     with open(INPUT_JSON, "r") as f:
@@ -29,25 +62,44 @@ def main():
 
     print(f"Loaded {len(data)} snippets from {INPUT_JSON}.")
 
-    futures = []
+    futures = {}
+    start_all = time.time()
+
+    # Start GPU monitoring thread
+    stop_event = threading.Event()
+    monitor_thread = threading.Thread(target=monitor_gpus, args=(stop_event,), daemon=True)
+    monitor_thread.start()
+
     with ThreadPoolExecutor(max_workers=NUM_GPUS * CONCURRENCY_PER_GPU) as executor:
         for i, item in enumerate(data):
             gpu_id = i % NUM_GPUS
             snippet = item["content"]
-            futures.append(executor.submit(run_inference, gpu_id, snippet))
+            fut = executor.submit(run_inference, gpu_id, snippet, item["file_name"])
+            futures[fut] = i
 
-        for i, future in enumerate(as_completed(futures)):
+        for fut in as_completed(futures):
+            idx = futures[fut]
             try:
-                result = future.result()
-                data[i]["description"] = result
-                print(f"✔ Finished {data[i]['file_name']}")
+                result = fut.result()
+                data[idx]["description"] = result["description"]
+                data[idx]["gpu"] = result["gpu"]
+                data[idx]["time_sec"] = result["time_sec"]
+
+                # Write partial results immediately
+                with open(OUTPUT_JSON, "w") as f:
+                    json.dump(data, f, indent=2)
+
+                print(f"✔ {result['file_name']} | GPU {result['gpu']} | {result['time_sec']:.2f}s")
             except Exception as e:
-                print(f"✘ Error on snippet {i}: {e}")
+                print(f"✘ Error on snippet {idx}: {e}")
 
-    with open(OUTPUT_JSON, "w") as f:
-        json.dump(data, f, indent=2)
+    # Stop GPU monitor
+    stop_event.set()
+    monitor_thread.join(timeout=1)
 
-    print(f"Saved results to {OUTPUT_JSON}.")
+    total_time = time.time() - start_all
+    print(f"All done in {total_time:.2f}s. Results saved to {OUTPUT_JSON}.")
+
 
 if __name__ == "__main__":
     main()
