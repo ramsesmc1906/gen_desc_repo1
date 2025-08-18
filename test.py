@@ -1,59 +1,56 @@
-import pandas as pd
-import matplotlib.pyplot as plt
+import os
+import subprocess
+import concurrent.futures
 
-def analyze_gpu_log(log_file):
-    """
-    Reads a GPU usage log file, calculates statistics, and plots the data.
+# Example code snippets (replace with your actual list)
+codes = [
+    "def add(a, b): return a + b",
+    "for i in range(10): print(i)",
+    "class Person:\n    def __init__(self, name): self.name = name",
+    # ... load thousands of snippets here
+]
 
-    Args:
-        log_file (str): The path to the CSV log file.
+MODEL = "llama3.2:3b"
+NUM_GPUS = 2  # you have 2x RTX 4090
+
+
+def generate_description(code: str, gpu_id: int) -> str:
     """
-    print("\n--- Analyzing GPU Usage ---")
+    Run Ollama on the given GPU with the given code snippet as input.
+    """
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
     try:
-        # Read the CSV log file into a pandas DataFrame
-        df = pd.read_csv(log_file)
-        
-        # Convert the timestamp column to datetime objects
-        df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y/%m/%d %H:%M:%S.%f')
-        
-        # Calculate the elapsed time in seconds from the start of the log
-        df['elapsed_seconds'] = (df['timestamp'] - df['timestamp'].iloc[0]).dt.total_seconds()
+        proc = subprocess.run(
+            ["ollama", "run", MODEL],
+            input=code.encode(),
+            capture_output=True,
+            env=env,
+            check=True
+        )
+        return proc.stdout.decode().strip()
+    except subprocess.CalledProcessError as e:
+        return f"[ERROR on GPU {gpu_id}] {e.stderr.decode().strip()}"
 
-        print("\nGPU Usage Statistics:")
-        # Print descriptive statistics for GPU utilization and memory usage
-        print(df[['gpu_utilization_percent', 'memory_used_mb']].describe())
 
-        # --- Plotting the Data ---
-        fig, ax1 = plt.subplots(figsize=(12, 6))
-
-        # Plot GPU Utilization on the primary y-axis (ax1)
-        color = 'tab:red'
-        ax1.set_xlabel('Time (seconds)')
-        ax1.set_ylabel('GPU Utilization (%)', color=color)
-        ax1.plot(df['elapsed_seconds'], df['gpu_utilization_percent'], color=color, label='GPU Utilization')
-        ax1.tick_params(axis='y', labelcolor=color)
-        ax1.set_ylim(0, 105) # Set y-axis from 0 to 105 for percentage
-
-        # Create a second y-axis (ax2) for Memory Usage
-        ax2 = ax1.twinx()
-        color = 'tab:blue'
-        ax2.set_ylabel('Memory Used (MB)', color=color)
-        ax2.plot(df['elapsed_seconds'], df['memory_used_mb'], color=color, label='Memory Used')
-        ax2.tick_params(axis='y', labelcolor=color)
-
-        fig.suptitle('GPU Performance Analysis', fontsize=16)
-        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
-        
-        # Display the plot
-        plt.show()
-
-    except FileNotFoundError:
-        print(f"Error: The log file '{log_file}' was not found.")
-    except Exception as e:
-        print(f"An unexpected error occurred during analysis: {e}")
-
-# Example usage:
 if __name__ == "__main__":
-    # Change 'gpu_usage.log' to the name of your specific log file
-    log_file_name = 'gpu_usage.log' 
-    analyze_gpu_log(log_file_name)
+    results = []
+
+    # Thread pool for concurrent execution across GPUs
+    with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_GPUS) as executor:
+        futures = []
+        for i, code in enumerate(codes):
+            gpu_id = i % NUM_GPUS  # distribute jobs round-robin across GPUs
+            futures.append(executor.submit(generate_description, code, gpu_id))
+
+        # Collect results
+        for f in concurrent.futures.as_completed(futures):
+            results.append(f.result())
+
+    # Save or print results
+    with open("descriptions.txt", "w") as f:
+        for desc in results:
+            f.write(desc + "\n")
+
+    print(f"✅ Finished generating {len(results)} descriptions. Results saved to descriptions.txt")
