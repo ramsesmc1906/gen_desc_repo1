@@ -17,11 +17,15 @@ NUM_GPUS = 2  # you have 2x RTX 4090
 def generate_description(code: str, gpu_id: int) -> str:
     """
     Run Ollama on the given GPU with the given code snippet as input.
+    Prints GPU usage info for clarity.
     """
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
+    print(f"[INFO] Sending job to GPU {gpu_id} with snippet: {code[:40]}...")
+
     try:
+        # Run ollama bound to the selected GPU
         proc = subprocess.run(
             ["ollama", "run", MODEL],
             input=code.encode(),
@@ -29,7 +33,12 @@ def generate_description(code: str, gpu_id: int) -> str:
             env=env,
             check=True
         )
-        return proc.stdout.decode().strip()
+        output = proc.stdout.decode().strip()
+
+        # Run nvidia-smi once to show GPU usage snapshot
+        subprocess.run(["nvidia-smi"], env=env)
+
+        return f"[GPU {gpu_id}] {output}"
     except subprocess.CalledProcessError as e:
         return f"[ERROR on GPU {gpu_id}] {e.stderr.decode().strip()}"
 
