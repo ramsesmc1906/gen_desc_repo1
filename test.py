@@ -1,2 +1,3 @@
-# Download and install Ollama
-curl -fsSL https://ollama.com/install.sh | sh
+sudo systemctl start ollama
+sudo systemctl enable ollama
+ollama serve
