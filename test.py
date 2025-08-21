@@ -332,5 +332,6 @@ async def run_full_processing():
     
     return summary
 
-# Uncomment to run full processing
-await run_full_processing()
+# This is the standard way to run an async program from the top level.
+if __name__ == "__main__":
+    asyncio.run(run_full_processing())
